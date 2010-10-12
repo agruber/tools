@@ -167,7 +167,7 @@ if ( $r == 1 ) {
 $z = sprintf( "%.2f", $z );
 if ($verbose) {
   print "$z,$flag,$n,$mfe,", join( ";", @seeds ), ",", join( ";", @global_avg ), ",",
-    join( ";", @global_sd ), "\n";
+    join( ";", @global_sd ), ",$seq\n";
 } else {
   print "$z\n";
 }
