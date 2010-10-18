@@ -24,6 +24,8 @@ my $RNAfold        = 'RNAfold';
 my $ushuffle       = 'ushuffle';
 my $RNAfoldoptions = '-d2 -noPS';
 
+#my $RNAfoldoptions = '-d2 --noPS'; # use for Vienna RNA package 2.0
+
 ###############################################################################
 # OPTIONS PROCESSING
 ###############################################################################
@@ -42,6 +44,7 @@ my @global_sd  = ();
 my @seeds      = ();
 my $seq;
 my $pipe;
+my $ensemble;
 
 GetOptions(
   "n:i"            => \$n,
@@ -58,7 +61,8 @@ GetOptions(
   "nochecking"     => \$nochecking,
   "pipe"           => \$pipe,
   "s:s"            => \$seq,
-  "sequence:s"     => \$seq
+  "sequence:s"     => \$seq,
+  "ensemble"       => \$ensemble
 );
 
 if ( !$nochecking ) {
@@ -93,18 +97,20 @@ if ( $k < 1 or $k > 2 ) {
 }
 
 $flag = ( $k == 2 ) ? 'dinucelotide' : 'mononucleotide';
-
-if ( $pipe ) {
+my $flag_energy = ($ensemble) ? 'ensemble' : 'mfe';
+if ($pipe) {
   $seq = <STDIN>;
 }
 
-if ( ! $seq ) {
+if ( !$seq ) {
   print "ERROR: No sequence provided.\n";
   print usage();
   exit 1;
 }
-  
 
+if ($ensemble) {
+  $RNAfoldoptions .= ' -p';
+}
 
 ###############################################################################
 # MAIN
@@ -116,49 +122,68 @@ if ( $seq =~ m/[^A-Z]/i ) {
   exit 1;
 }
 
-# call RNAfold to get MFE
-my $mfe = `echo $seq | $RNAfold $RNAfoldoptions | grep '(' | cut -f2,3,4,5,6,7 -d' '`;
-chomp $mfe;
-$mfe =~ s/(\(|\)|\s|\n)//g;
+my $mfe;
+my $ensemble_energy;
+
+# call RNAfold to get MFE or ensemble free energy
+my @RNAfoldout = `echo $seq | $RNAfold $RNAfoldoptions`;
+foreach my $line (@RNAfoldout) {
+  if ( $line =~ m/.*\s\(\s*(-?\d+\.\d+)\)\n/ ) {
+    $mfe = $1;
+  }
+  if ( $line =~ m/.*\s\[\s*(-?\d+\.\d+)\]\n/ ) {
+    $ensemble_energy = $1;
+  }
+}
 
 # shuffle 'n fold
 for ( 1 .. $r ) {
 
   # choose a seed between 1 ... 100,000,000
   my $seed = int( rand(100000000) );
-  my @out =
-    `$ushuffle -s $seq -k $k -n $n -seed $seed| $RNAfold $RNAfoldoptions | grep '(' | cut -f2,3,4,5,6,7 -d' '`;
-  if ( $#out == $n - 1 ) {
-    my $avg = 0;
-    foreach my $i ( 0 .. $#out ) {
-      $out[$i] =~ s/(\(|\)|\s|\n)//g;
-      $avg += $out[$i];
+  my @out  = `$ushuffle -s $seq -k $k -n $n -seed $seed | $RNAfold $RNAfoldoptions`;
+
+  my $avg    = 0;
+  my @values = ();
+  foreach my $i ( 0 .. $#out ) {
+    if ( $out[$i] =~ m/.*\s\(\s*(-?\d+\.\d+)\)\n/ and !$ensemble ) {
+      push @values, $1;
+      $avg += $1;
     }
-    $avg = $avg / $n;
-    my $stdv = 0;
-    foreach my $i ( 0 .. $#out ) {
-      $stdv += ( $out[$i] - $avg )**2;
+    if ( $out[$i] =~ m/.*\s\[\s*(-?\d+\.\d+)\]\n/ and $ensemble ) {
+      push @values, $1;
+      $avg += $1;
     }
-    $stdv = $stdv / ( $n - 1 );
-    $stdv = sqrt($stdv);
-    $stdv = sprintf( "%.5f", $stdv );
-    $avg  = sprintf( "%.5f", $avg );
-    push @global_avg, $avg;
-    push @global_sd,  $stdv;
-    push @seeds,      $seed;
-  } else {
-    print STDERR "ERROR: n == $n was not reached.\n";
+  }
+
+  if ( $#values != $n - 1 ) {
+    print STDERR "ERROR: Failed to generate $n shuffled sequences\n";
     exit 1;
   }
+
+  $avg = $avg / $n;
+  my $stdv = 0;
+  foreach my $i ( 0 .. $#values ) {
+    $stdv += ( $values[$i] - $avg )**2;
+  }
+  $stdv = $stdv / ( $n - 1 );
+  $stdv = sqrt($stdv);
+  $stdv = sprintf( "%.5f", $stdv );
+  $avg  = sprintf( "%.5f", $avg );
+  push @global_avg, $avg;
+  push @global_sd,  $stdv;
+  push @seeds,      $seed;
+
 }
 
 # calculate z-score
 my $z = 0;
+my $energy = ($ensemble) ? $ensemble_energy : $mfe;
 if ( $r == 1 ) {
-  $z = ( $mfe - $global_avg[0] ) / $global_sd[0];
+  $z = ( $energy - $global_avg[0] ) / $global_sd[0];
 } else {
   for my $i ( 0 .. $r - 1 ) {
-    $z += ( $mfe - $global_avg[$i] ) / $global_sd[$i];
+    $z += ( $energy - $global_avg[$i] ) / $global_sd[$i];
   }
   $z = $z / $r;
 }
@@ -166,7 +191,8 @@ if ( $r == 1 ) {
 # output
 $z = sprintf( "%.2f", $z );
 if ($verbose) {
-  print "$z,$flag,$n,$mfe,", join( ";", @seeds ), ",", join( ";", @global_avg ), ",",
+  print "$z,$flag,$flag_energy,$n,$energy,", join( ";", @seeds ), ",", join( ";", @global_avg ),
+    ",",
     join( ";", @global_sd ), ",$seq\n";
 } else {
   print "$z\n";
@@ -223,7 +249,9 @@ OPTIONS
 
   -h, --help             Display this help message.
 
-  
+  --ensemble             Calculate the z-score based on the ensemble free
+                         energy instead of the minimum free energy.
+
 EOF
   exit;
 }
