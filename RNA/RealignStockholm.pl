@@ -331,6 +331,7 @@ while (1) {
   my $length = 0;
   my @l      = ();
   foreach my $key ( keys %newseqs ) {
+    next if ( $key =~ m/^#/ );
     $length = length( $newseqs{$key} );
     foreach my $entry (@l) {
       if ( $entry != $length ) {
